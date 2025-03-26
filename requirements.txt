@@ -1,4 +1,6 @@
 telebot
 requests
-wikipedia
+pyrebase
 firebase-admin
+wikipedia
+flask
