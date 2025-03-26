@@ -1,3 +1,6 @@
+import os
+import json
+import logging
 import telebot
 import requests
 from telebot import types
@@ -7,16 +10,28 @@ import random
 import wikipedia
 import firebase_admin
 from firebase_admin import credentials, firestore
+from flask import Flask, request
 
-# Firebase sozlamalari
-cred = credentials.Certificate("path/to/your/telegramyordamchibot-firebase-adminsdk-xxx.json")  # JSON fayl yo‘lini keyin o‘zgartiramiz
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+# Flask serverini sozlash (webhook uchun)
+server = Flask(__name__)
+
+# Logging sozlamalari
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Environment Variables’dan maxfiy ma’lumotlarni olish
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+WEATHER_API_KEY = os.environ.get('WEATHER_API_KEY')
+FIREBASE_CRED = os.environ.get('FIREBASE_CRED')
 
 # Botni sozlash
-bot = telebot.TeleBot("7953632399:AAEbW8YXN6kgeAWppiA_xy8Q9VKf_33mZ-A")  # Tokenni o'zingiznikiga almashtiring
-WEATHER_API_KEY = "0f9983b68fc8458184d17aa82f048236"
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 ADMINS = [1058402071]
+
+# Firebase sozlamalari
+cred = credentials.Certificate(json.loads(FIREBASE_CRED))
+firebase_admin.initialize_app(cred)
+db = firestore.client()
 
 # Emoji sozlamalari
 weather_emojis = {
@@ -128,7 +143,7 @@ def retry_on_failure(func, max_retries=3, delay=5):
         try:
             return func()
         except Exception as e:
-            print(f"Qayta urinish {attempt + 1}/{max_retries}: Xatolik - {e}")
+            logger.error(f"Qayta urinish {attempt + 1}/{max_retries}: Xatolik - {e}")
             if attempt < max_retries - 1:
                 time.sleep(delay)
             else:
@@ -179,7 +194,8 @@ def get_current_weather_by_city(city):
         if response.get("cod") != 200:
             return "❌ Shahar topilmadi! Iltimos, to‘g‘ri nom kiriting.", None, None, None
         return process_weather_response(response)
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logger.error(f"Ob-havo ma’lumotlarini olishda xatolik: {e}")
         return "⚠️ Ob-havo ma’lumotlarini olishda xatolik yuz berdi.", None, None, None
 
 def get_current_weather_by_coords(lat, lon):
@@ -189,7 +205,8 @@ def get_current_weather_by_coords(lat, lon):
         if response.get("cod") != 200:
             return "❌ Joylashuv bo‘yicha ma’lumot topilmadi.", None, None, None
         return process_weather_response(response)
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logger.error(f"Ob-havo ma’lumotlarini olishda xatolik: {e}")
         return "⚠️ Ob-havo ma’lumotlarini olishda xatolik yuz berdi.", None, None, None
 
 def process_weather_response(response):
@@ -234,7 +251,8 @@ def get_forecast_weather(lat, lon):
                     "precipitation": entry.get("rain", {}).get("3h", 0) or entry.get("snow", {}).get("3h", 0)
                 }
         return forecast_data
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logger.error(f"Ob-havo prognozini olishda xatolik: {e}")
         return None
 
 def translate_city_name(city):
@@ -260,7 +278,8 @@ def get_prayer_times_by_city(city):
             f"{prayer_emojis['Isha']}: {timings['Isha']}"
         )
         return prayer_info
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logger.error(f"Namoz vaqtlarini olishda xatolik: {e}")
         return "⚠️ Namoz vaqtlarini olishda xatolik yuz berdi."
 
 def get_prayer_times_by_coords(lat, lon):
@@ -284,7 +303,8 @@ def get_prayer_times_by_coords(lat, lon):
             f"{prayer_emojis['Isha']}: {timings['Isha']}"
         )
         return prayer_info
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logger.error(f"Namoz vaqtlarini olishda xatolik: {e}")
         return "⚠️ Namoz vaqtlarini olishda xatolik yuz berdi."
 
 def get_currency_rates():
@@ -300,7 +320,7 @@ def get_currency_rates():
         save_currency_cache(rates)
         return rates
     except requests.RequestException as e:
-        print(f"Valyuta kursini olishda xato: {e}")
+        logger.error(f"Valyuta kursini olishda xato: {e}")
         return None
 
 def generate_random_number(start, end):
@@ -371,7 +391,6 @@ def send_welcome(message):
         username = message.from_user.username or "Noma'lum"
         banned_users = get_banned_users()
         if user_id not in banned_users:
-            # Foydalanuvchini Firebase’ga qo‘shish
             users = get_users()
             if not any(user["user_id"] == user_id for user in users):
                 save_user(user_id, username)
@@ -381,6 +400,7 @@ def send_welcome(message):
         else:
             bot.reply_to(message, "🚫 Siz botdan foydalana olmaysiz, chunki bloklangansiz!")
     except Exception as e:
+        logger.error(f"Start buyrug‘ida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 @bot.message_handler(commands=['admin'])
@@ -392,6 +412,7 @@ def admin_panel(message):
         bot.reply_to(message, "👨‍💼 Admin paneliga xush kelibsiz! Quyidagi opsiyalardan birini tanlang:", reply_markup=admin_panel_menu())
         bot.register_next_step_handler(message, process_admin_panel)
     except Exception as e:
+        logger.error(f"Admin panelida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Admin panelida xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_admin_panel(message):
@@ -417,6 +438,7 @@ def process_admin_panel(message):
                 bot.reply_to(message, f"👥 Foydalanuvchilar ro‘yxati:\n{user_list}", reply_markup=admin_panel_menu())
                 bot.register_next_step_handler(message, process_admin_panel)
     except Exception as e:
+        logger.error(f"Admin panelida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Admin panelida xatolik yuz berdi: {str(e)}", reply_markup=admin_panel_menu())
         bot.register_next_step_handler(message, process_admin_panel)
 
@@ -434,10 +456,11 @@ def broadcast_message(message):
                 try:
                     bot.send_message(user_id, f"📢 Admin xabari:\n{message.text}")
                 except Exception as e:
-                    print(f"Foydalanuvchi {user_id} ga xabar yuborishda xato: {e}")
+                    logger.error(f"Foydalanuvchi {user_id} ga xabar yuborishda xato: {e}")
         bot.reply_to(message, "✅ Xabar barcha foydalanuvchilarga yuborildi!", reply_markup=admin_panel_menu())
         bot.register_next_step_handler(message, process_admin_panel)
     except Exception as e:
+        logger.error(f"Xabar yuborishda xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xabar yuborishda xatolik yuz berdi: {str(e)}", reply_markup=admin_panel_menu())
         bot.register_next_step_handler(message, process_admin_panel)
 
@@ -455,6 +478,7 @@ def ban_user_handler(message):
         bot.reply_to(message, "❌ Iltimos, to‘g‘ri foydalanuvchi ID’sini kiriting (raqam bo‘lishi kerak)!", reply_markup=admin_panel_menu())
         bot.register_next_step_handler(message, process_admin_panel)
     except Exception as e:
+        logger.error(f"Bloklashda xatolik: {e}")
         bot.reply_to(message, f"⚠️ Bloklashda xatolik yuz berdi: {str(e)}", reply_markup=admin_panel_menu())
         bot.register_next_step_handler(message, process_admin_panel)
 
@@ -472,6 +496,7 @@ def unban_user_handler(message):
         bot.reply_to(message, "❌ Iltimos, to‘g‘ri foydalanuvchi ID’sini kiriting (raqam bo‘lishi kerak)!", reply_markup=admin_panel_menu())
         bot.register_next_step_handler(message, process_admin_panel)
     except Exception as e:
+        logger.error(f"Blokdan chiqarishda xatolik: {e}")
         bot.reply_to(message, f"⚠️ Blokdan chiqarishda xatolik yuz berdi: {str(e)}", reply_markup=admin_panel_menu())
         bot.register_next_step_handler(message, process_admin_panel)
 
@@ -481,6 +506,7 @@ def weather_request(message):
         bot.reply_to(message, "📍 Iltimos, shahar nomini kiriting yoki joylashuvingizni yuboring:", reply_markup=weather_request_menu())
         bot.register_next_step_handler(message, process_weather_request)
     except Exception as e:
+        logger.error(f"Ob-havo so‘rovida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_weather_request(message):
@@ -514,6 +540,7 @@ def process_weather_request(message):
             else:
                 bot.reply_to(message, weather_info, reply_markup=main_menu(message.from_user.id))
     except Exception as e:
+        logger.error(f"Ob-havo so‘rovini qayta ishlashda xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_forecast(message, forecast_data):
@@ -546,6 +573,7 @@ def process_forecast(message, forecast_data):
             bot.reply_to(message, "❌ Iltimos, ro‘yxatdan kunni tanlang!", reply_markup=forecast_menu())
             bot.register_next_step_handler(message, lambda m: process_forecast(m, forecast_data))
     except Exception as e:
+        logger.error(f"Ob-havo prognozini qayta ishlashda xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 @bot.message_handler(func=lambda message: message.text == "🕌 Namoz vaqtlari")
@@ -554,6 +582,7 @@ def prayer_request(message):
         bot.reply_to(message, "📍 Iltimos, shahar nomini kiriting yoki joylashuvingizni yuboring:", reply_markup=prayer_request_menu())
         bot.register_next_step_handler(message, process_prayer_request)
     except Exception as e:
+        logger.error(f"Namoz vaqtlari so‘rovida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_prayer_request(message):
@@ -571,6 +600,7 @@ def process_prayer_request(message):
             prayer_info = get_prayer_times_by_city(city)
             bot.reply_to(message, prayer_info, reply_markup=main_menu(message.from_user.id))
     except Exception as e:
+        logger.error(f"Namoz vaqtlari so‘rovini qayta ishlashda xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 @bot.message_handler(func=lambda message: message.text == "💱 Valyuta kursi")
@@ -579,6 +609,7 @@ def currency_request(message):
         bot.reply_to(message, "💱 Valyuta kursini ko‘rish uchun valyutani tanlang:", reply_markup=currency_menu())
         bot.register_next_step_handler(message, process_currency_request)
     except Exception as e:
+        logger.error(f"Valyuta kursi so‘rovida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_currency_request(message):
@@ -614,6 +645,7 @@ def process_currency_request(message):
             bot.reply_to(message, currency_info, reply_markup=currency_menu())
             bot.register_next_step_handler(message, process_currency_request)
     except Exception as e:
+        logger.error(f"Valyuta kursi so‘rovini qayta ishlashda xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_currency_conversion_from(message):
@@ -626,6 +658,7 @@ def process_currency_conversion_from(message):
         bot.reply_to(message, f"💱 {from_currency} dan qaysi valyutaga konvert qilmoqchisiz?", reply_markup=currency_selection_menu(from_currency))
         bot.register_next_step_handler(message, lambda m: process_currency_conversion_to(m, from_currency))
     except Exception as e:
+        logger.error(f"Valyuta konvertatsiyasida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_currency_conversion_to(message, from_currency):
@@ -638,6 +671,7 @@ def process_currency_conversion_to(message, from_currency):
         bot.reply_to(message, f"💱 {from_currency} dan {to_currency} ga konvert qilish uchun miqdorni kiriting:", reply_markup=amount_input_menu())
         bot.register_next_step_handler(message, lambda m: process_currency_conversion_amount(m, from_currency, to_currency))
     except Exception as e:
+        logger.error(f"Valyuta konvertatsiyasida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_currency_conversion_amount(message, from_currency, to_currency):
@@ -662,6 +696,7 @@ def process_currency_conversion_amount(message, from_currency, to_currency):
         bot.reply_to(message, "❌ Iltimos, to‘g‘ri miqdorni kiriting (raqam bo‘lishi kerak)!", reply_markup=amount_input_menu())
         bot.register_next_step_handler(message, lambda m: process_currency_conversion_amount(m, from_currency, to_currency))
     except Exception as e:
+        logger.error(f"Valyuta konvertatsiyasida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 @bot.message_handler(func=lambda message: message.text == "🎲 Tasodifiy son")
@@ -670,6 +705,7 @@ def random_number_request(message):
         bot.reply_to(message, "🎲 Iltimos, diapazonni kiriting (masalan, 1-100):")
         bot.register_next_step_handler(message, process_random_number_request)
     except Exception as e:
+        logger.error(f"Tasodifiy son so‘rovida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_random_number_request(message):
@@ -689,6 +725,7 @@ def process_random_number_request(message):
         bot.reply_to(message, "❌ Iltimos, to‘g‘ri diapazon kiriting (masalan, 1-100)!", reply_markup=random_number_menu())
         bot.register_next_step_handler(message, process_random_number_request)
     except Exception as e:
+        logger.error(f"Tasodifiy son generatsiyasida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 @bot.message_handler(func=lambda message: message.text == "📚 Vikipediya")
@@ -697,6 +734,7 @@ def wikipedia_request(message):
         bot.reply_to(message, "📚 Qidiruv so‘zini kiriting (masalan, O‘zbekiston):")
         bot.register_next_step_handler(message, process_wikipedia_request)
     except Exception as e:
+        logger.error(f"Vikipediya so‘rovida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_wikipedia_request(message):
@@ -708,6 +746,7 @@ def process_wikipedia_request(message):
         info = get_wikipedia_info(query)
         bot.reply_to(message, info, reply_markup=main_menu(message.from_user.id))
     except Exception as e:
+        logger.error(f"Vikipediya so‘rovini qayta ishlashda xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 @bot.message_handler(func=lambda message: message.text == "📝 Shikoyat va Takliflar")
@@ -716,6 +755,7 @@ def feedback_request(message):
         bot.reply_to(message, "📝 Iltimos, shikoyat yoki taklifingizni yozing:")
         bot.register_next_step_handler(message, process_feedback_request)
     except Exception as e:
+        logger.error(f"Shikoyat va takliflar so‘rovida xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
 def process_feedback_request(message):
@@ -730,16 +770,30 @@ def process_feedback_request(message):
             try:
                 bot.send_message(admin_id, f"📝 Yangi shikoyat/taklif:\nFoydalanuvchi: {username} (ID: {user_id})\nXabar: {feedback}")
             except Exception as e:
-                print(f"Admin {admin_id} ga xabar yuborishda xato: {e}")
+                logger.error(f"Admin {admin_id} ga xabar yuborishda xato: {e}")
         bot.reply_to(message, "✅ Shikoyat yoki taklifingiz qabul qilindi! Tez orada ko‘rib chiqamiz.", reply_markup=main_menu(message.from_user.id))
     except Exception as e:
+        logger.error(f"Shikoyat va takliflar so‘rovini qayta ishlashda xatolik: {e}")
         bot.reply_to(message, f"⚠️ Xatolik yuz berdi: {str(e)}", reply_markup=main_menu(message.from_user.id))
 
-# Botni ishga tushirish
+# Webhook uchun Flask routelari
+@server.route('/bot', methods=['POST'])
+def webhook():
+    update = telebot.types.Update.de_json(request.stream.read().decode('utf-8'))
+    bot.process_new_updates([update])
+    return 'OK', 200
+
+@server.route('/')
+def index():
+    return 'Bot is running!'
+
+# Webhook sozlash va serverni ishga tushirish
 if __name__ == "__main__":
-    while True:
-        try:
-            bot.polling(none_stop=True)
-        except Exception as e:
-            print(f"Botda xatolik yuz berdi: {e}")
-            time.sleep(15)
+    # Webhook sozlash
+    bot.remove_webhook()
+    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/bot"
+    bot.set_webhook(url=webhook_url)
+    logger.info(f"Webhook set to {webhook_url}")
+
+    # Flask serverini ishga tushirish
+server.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))            
