@@ -1,6 +1,5 @@
 telebot
 requests
-pyrebase
 firebase-admin
 wikipedia
 flask
